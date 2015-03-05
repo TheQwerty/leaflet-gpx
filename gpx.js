@@ -70,6 +70,7 @@ L.GPX = L.FeatureGroup.extend({
 
     this._gpx = gpx;
     this._layers = {};
+    this._latlngs = [];
     this._info = {
       name: null,
       length: 0.0,
@@ -132,6 +133,11 @@ L.GPX = L.FeatureGroup.extend({
   get_moving_speed:    function() { return this.m_to_km(this.get_distance()) / (this.get_moving_time() / (3600 * 1000)) ; },
   get_moving_speed_imp:function() { return this.to_miles(this.m_to_km(this.get_distance())) / (this.get_moving_time() / (3600 * 1000)) ; },
 
+  get_point_count:        function() { return this.get_latlngs().length; },
+  get_latlngs:            function() { return this._latlngs; },
+
+  has_elevation_points:   function() { return this.get_elevation_points().length > 0; },
+  get_elevation_points:   function() { return this._info.elevation._points; },
   get_elevation_gain:     function() { return this._info.elevation.gain; },
   get_elevation_loss:     function() { return this._info.elevation.loss; },
   get_elevation_data:     function() {
@@ -209,13 +215,27 @@ L.GPX = L.FeatureGroup.extend({
       _this.fire('loaded');
     }
     if (input.substr(0,1)==='<') { // direct XML has to start with a <
-      var parser = new DOMParser();
-      setTimeout(function() {
-        cb(parser.parseFromString(input, "text/xml"), options);
-      });
+      if (window.DOMParser) {
+        var parser = new DOMParser();
+        setTimeout(function() {
+          cb(parser.parseFromString(input, "text/xml"), options);
+        });
+      } else if (window.ActiveXObject) {
+        // Fall back to Microsoft's XMLDom ActiveX for crappy IE.
+        var parser = new ActiveXObject('Microsoft.XMLDOM');
+        parser.async = false;
+        parser.loadXML(input)
+        setTimeout(function() {
+          cb(parser, options);
+        });
+      }
     } else {
       this._load_xml(input, cb, options, async);
     }
+  },
+
+  _elemText: function(e) {
+    return e.textContent || e.text;
   },
 
   _parse_gpx_data: function(xml, options) {
@@ -224,19 +244,19 @@ L.GPX = L.FeatureGroup.extend({
 
     var name = xml.getElementsByTagName('name');
     if (name.length > 0) {
-      this._info.name = name[0].textContent;
+      this._info.name = this._elemText(name[0]);
     }
     var desc = xml.getElementsByTagName('desc');
     if (desc.length > 0) {
-      this._info.desc = desc[0].textContent;
+      this._info.desc = this._elemText(desc[0]);
     }
     var author = xml.getElementsByTagName('author');
     if (author.length > 0) {
-      this._info.author = author[0].textContent;
+      this._info.author = this._elemText(author[0]);
     }
     var copyright = xml.getElementsByTagName('copyright');
     if (copyright.length > 0) {
-      this._info.copyright = copyright[0].textContent;
+      this._info.copyright = this._elemText(copyright[0]);
     }
 
     for (j = 0; j < tags.length; j++) {
@@ -281,6 +301,35 @@ L.GPX = L.FeatureGroup.extend({
     return layer;
   },
 
+  _str_to_date: function(s) {
+    var D= new Date('2011-06-02T09:34:29+02:00');
+    if(!D || +D!== 1307000069000){
+      var day, tz,
+          rx=/^(\d{4}\-\d\d\-\d\d([tT ][\d:\.]*)?)([zZ]|([+\-])(\d\d):(\d\d))?$/,
+          p= rx.exec(s) || [];
+    
+      if(p[1]){
+        day= p[1].split(/\D/);
+        for(var i= 0, L= day.length; i<L; i++){
+          day[i]= parseInt(day[i], 10) || 0;
+        };
+        day[1]-= 1;
+        day= new Date(Date.UTC.apply(Date, day));
+        if(!day.getDate()) return NaN;
+        if(p[5]){
+          tz= (parseInt(p[5], 10)*60);
+          if(p[6]) tz+= parseInt(p[6], 10);
+          if(p[4]== '+') tz*= -1;
+          if(tz) day.setUTCMinutes(day.getUTCMinutes()+ tz);
+        }
+        return day;
+      }
+      return NaN;
+    }else{
+      return new Date(Date.parse(s));
+    }
+  },
+
   _parse_trkseg: function(line, xml, options, tag) {
     var el = line.getElementsByTagName(tag);
     if (!el.length) return [];
@@ -295,22 +344,24 @@ L.GPX = L.FeatureGroup.extend({
 
       _ = el[i].getElementsByTagName('time');
       if (_.length > 0) {
-        ll.meta.time = new Date(Date.parse(_[0].textContent));
+        ll.meta.time = this._str_to_date(this._elemText(_[0]));
       }
 
       _ = el[i].getElementsByTagName('ele');
       if (_.length > 0) {
-        ll.meta.ele = parseFloat(_[0].textContent);
+        ll.meta.ele = parseFloat(this._elemText(_[0]));
       }
 
-      _ = el[i].getElementsByTagNameNS('*', 'hr');
+      _ = el[i].getElementsByTagName('hr');
       if (_.length > 0) {
-        ll.meta.hr = parseInt(_[0].textContent);
+        ll.meta.hr = parseInt(this._elemText(_[0]));
         this._info.hr._points.push([this._info.length, ll.meta.hr]);
         this._info.hr._total += ll.meta.hr;
       }
 
-      this._info.elevation._points.push([this._info.length, ll.meta.ele]);
+      if (ll.meta.ele != null) {
+        this._info.elevation._points.push([this._info.length, ll.meta.ele]);
+      }
       this._info.duration.end = ll.meta.time;
 
       if (last != null) {
@@ -329,6 +380,7 @@ L.GPX = L.FeatureGroup.extend({
 
       last = ll;
       coords.push(ll);
+      this._latlngs.push(ll);
     }
 
     return coords;
